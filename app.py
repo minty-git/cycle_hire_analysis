@@ -27,11 +27,12 @@ fig = px.bar(df, x='ride_week', y='avg_ride_duration_minutes', title='Citi Ride 
 st.plotly_chart(fig, width='stretch', key='citi_ride_duration_per_week')
 
 # Citi Stations per Week
-df = con.sql("select ride_week, count(distinct start_station_name) as stations_started from citi_statistics_by_week GROUP BY all").df()
+df = con.sql("select ride_week, stations_started from citi_statistics_by_week GROUP BY all").df()
 fig = px.bar(df, x='ride_week', y='stations_started', title='Citi Stations per Week')
 st.plotly_chart(fig, width='stretch')
 
 # Citi Rides Over Time by Station Live Year - Bar
-df = con.sql("select ride_week, live_year, sum(rides) as Rides from citi_statistics_by_week GROUP BY all").df()
-fig = px.bar(df, x='ride_week', y='Rides', title='Citi Rides by Station Live Year per Week', color='live_year', color_continuous_scale='Viridis')
+df = con.sql("select ride_week, station_live_year, sum(rides) as Rides from citi_statistics_by_week GROUP BY all order by 1,2").df()
+df['station_live_year'] = df['station_live_year'].astype(str)
+fig = px.bar(df, x='ride_week', y='Rides', title='Citi Rides by Station Live Year per Week', color='station_live_year', color_continuous_scale='Viridis')
 st.plotly_chart(fig, width='stretch', key='citi_rides_by_station_live_year_per_week')
