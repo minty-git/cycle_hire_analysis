@@ -14,7 +14,8 @@ import plotly.express as px
 
 
 # 1. Connect to your DuckDB file
-con = duckdb.connect(database=r'C:\Users\minty\OneDrive\Documents\git\cycle_hire_analysis\cycle_hire_analysis.duckdb')
+# con = duckdb.connect(database=r'C:\Users\minty\OneDrive\Documents\git\cycle_hire_analysis\cycle_hire_analysis.duckdb')
+con = duckdb.connect(database='cycle_hire_analysis.duckdb')
 
 # Citi Ride Stations per Week
 df = con.sql("select ride_week, sum(rides) as Rides from citi_statistics_by_week group by all").df()
