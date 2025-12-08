@@ -1,0 +1,7 @@
+.venv/
+extract/data/
+transform/data/
+transform/target/
+transform/dbt_packages/
+transform/logs/
+logs/

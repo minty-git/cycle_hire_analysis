@@ -1,0 +1,11 @@
+sources:
+  - name: csvs
+    tables:
+      - name: tfl_cycling_data
+        config:
+          external_location: "read_csv('data/tfl_cycling_data/*.csv', union_by_name = true, filename = true)"
+          formatter: oldstyle
+      - name: citibike_trip_data
+        config:
+          external_location: "read_csv('data/citibike_trip_data/*.csv', union_by_name = true, filename = true)"
+          formatter: oldstyle
