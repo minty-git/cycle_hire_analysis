@@ -1,0 +1,56 @@
+version: 2
+
+models:
+  - name: citi_statistics_by_week
+    columns:
+      - name: ride_week
+        tests:
+          - not_null
+      - name: is_ride_weekend
+        tests:
+          - not_null
+      - name: is_ride_rush_hour
+        tests:
+          - not_null
+      - name: start_station_name
+        tests:
+          - not_null
+      - name: station_live_year
+        tests:
+          - not_null
+      - name: station_latitude
+        tests:
+          - not_null
+      - name: station_longitude
+        tests:
+          - not_null
+      - name: ride_duration_minutes
+        tests:
+          - not_null
+      - name: station_dock_actions
+        tests:
+          - not_null
+      - name: station_undock_actions
+        tests:
+          - not_null
+
+  - name: tfl_statistics_by_week
+    columns:
+      - name: ride_week
+        tests:
+          - not_null
+      - name: is_ride_weekend
+        tests:
+          - not_null
+      - name: is_ride_rush_hour
+        tests:
+          - not_null
+      - name: start_station_name
+        tests:
+          - not_null
+      - name: station_live_year
+        tests:
+          - not_null
+      - name: ride_duration_minutes
+        tests:
+          - not_null

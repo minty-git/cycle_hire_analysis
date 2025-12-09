@@ -7,7 +7,7 @@ with source as (
     select
 
         filename
-        , try_strptime("Start Date", ['%d/%m/%Y %H:%M', '%Y-%m-%d %H:%M']) as started_at
+        , try_strptime("Start Date", ['%d/%m/%Y %H:%M', '%Y-%m-%d %H:%M', '%Y-%m-%d %H:%M:%S']) as started_at
         , try_strptime("End Date", ['%d/%m/%Y %H:%M', '%Y-%m-%d %H:%M']) as ended_at
         , coalesce(cast("Start station number" as VARCHAR), cast("Start station number" as VARCHAR)) as start_station_id
         , coalesce(cast("End station number" as VARCHAR), cast("EndStation Id" as VARCHAR)) as end_station_id
@@ -23,7 +23,16 @@ with source as (
 
 )
 
-select * from final
+select
+
+    * exclude(trip_duration_s, start_station_name, end_station_name)
+    , case
+        when trip_duration_s is null then date_diff('second', started_at, ended_at)
+        else trip_duration_s
+    end as trip_duration_s
+    , nullif(replace(replace(replace(start_station_name, '\t&', ''), 't\t', ' '), '\t', ' '), 'NULL') as start_station_name
+    , nullif(replace(replace(replace(end_station_name, '\t&', ''), 't\t', ' '), '\t', ' '), 'NULL') as end_station_name
+
+from final
 where started_at >= '2018-01-01'
     and started_at <= '2023-11-30'
-    and trip_duration_s >= 60 -- To allign with Citi data. Citi's theory is that any trips that were below 60 seconds in length are likely "false starts or users trying to re-dock a bike to ensure it's secure"

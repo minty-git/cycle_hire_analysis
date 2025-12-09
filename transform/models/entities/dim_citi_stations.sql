@@ -10,7 +10,7 @@ with stg_citibike_trip_data as (
         -- start_station_id as station_id
         start_station_name as station_name
         , start_station_latitude as station_latitude
-        , start_station_latitude as station_longitude
+        , start_station_longitude as station_longitude
         , started_at
 
     from stg_citibike_trip_data
@@ -24,7 +24,7 @@ with stg_citibike_trip_data as (
         -- end_station_id as station_id
         end_station_name as station_name
         , end_station_latitude as station_latitude
-        , end_station_latitude as station_longitude
+        , end_station_longitude as station_longitude
         , started_at
 
     from stg_citibike_trip_data

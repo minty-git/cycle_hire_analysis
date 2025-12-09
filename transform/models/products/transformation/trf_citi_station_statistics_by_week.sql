@@ -1,17 +1,17 @@
 {{ config(materialized='view') }}
 -- I'd like to set this to a table to prevent the need to import the csvs multiple times, but doing this to reduce size of db
 
-with stg_tfl_cycling_data as (
-    select * from {{ ref('stg_tfl_cycling_data') }}
+with stg_citibike_trip_data as (
+    select * from {{ ref('stg_citibike_trip_data') }}
 ), unioned as (
     
     select
 
-        -- start_station_id as station_id
         start_station_name as station_name
         , started_at
+        , true as is_dock
 
-    from stg_tfl_cycling_data
+    from stg_citibike_trip_data
 
     group by all
 
@@ -19,20 +19,20 @@ with stg_tfl_cycling_data as (
 
     select
 
-        -- end_station_id as station_id
         end_station_name as station_name
         , started_at
+        , false as is_dock
 
-    from stg_tfl_cycling_data
+    from stg_citibike_trip_data
 
 ), final as (
     
     select
 
-        station_name
-        , min(started_at) as first_ride_at
-        , max(started_at) as last_ride_at
-        , count(*) as total_dock_undock_actions
+        date_trunc('week', started_at) as ride_week
+        , station_name
+        , count(case when is_dock then station_name end) as station_dock_actions
+        , count(case when not is_dock then station_name end) as station_undock_actions
 
     from unioned
 
