@@ -1,8 +1,8 @@
 {{ config(materialized='view') }}
 -- I'd like to set this to a table to prevent the need to import the csvs multiple times, but doing this to reduce size of db
 
-with fact_citi_rides as (
-    select * from {{ ref('fact_citi_rides') }}
+with fact_tfl_rides as (
+    select * from {{ ref('fact_tfl_rides') }}
 ), unioned as (
     
     select
@@ -11,7 +11,7 @@ with fact_citi_rides as (
         , started_at
         , true as is_dock
 
-    from fact_citi_rides
+    from fact_tfl_rides
 
     group by all
 
@@ -23,7 +23,7 @@ with fact_citi_rides as (
         , started_at
         , false as is_dock
 
-    from fact_citi_rides
+    from fact_tfl_rides
 
 ), final as (
     

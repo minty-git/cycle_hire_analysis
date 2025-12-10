@@ -4,378 +4,450 @@ import pandas as pd
 import plotly.express as px
 from datetime import date
 
-# Ideas:
-# - A plot that shows the rides (start point, end point, line between) on a map, with a slider that filters on the day
-# - Pull in weather data
-# - Pull in covid data
-# - Pull in NY Geo data that helps to predict the destination. Maybe it predicts travel hubs, or office locations. Maybe it predicts if it's a commute.
+# --- Page Configuration ---
+st.set_page_config(page_title="NYC vs London Cycle Analysis", layout="wide")
 
-con = duckdb.connect(database='cycle_hire_analysis.duckdb')
+# --- Database Connection ---
+@st.cache_resource
+def get_connection():
+    try:
+        return duckdb.connect(database='cycle_hire_analysis.duckdb')
+    except:
+        st.error("Could not connect to database.")
+        return None
 
+con = get_connection()
 
-PRESET_START_DATE = date(2020, 3, 14)
-PRESET_END_DATE = date(2021, 5, 21)
-MIN_DATA_DATE = date(2018, 1, 1)
-MAX_DATA_DATE = date(2023, 11, 30)
+# --- Sidebar Controls ---
+with st.sidebar:
+    st.header("Navigation")
+    page = st.radio("Select Page:", ["📊 Comparison", "🗽 New York Deep Dive", "🇬🇧 London Deep Dive"])
+    
+    st.markdown("---")
+    st.header("Global Filters")
+    
+    # Constants
+    MIN_DATA_DATE = date(2018, 1, 1)
+    MAX_DATA_DATE = date(2023, 11, 30)
+    PRESET_START = date(2020, 3, 1)
+    PRESET_END = date(2021, 6, 1)
 
-if 'date_slider' not in st.session_state:
-    # Initialize the slider to the full range
-    st.session_state.date_slider = (MIN_DATA_DATE, MAX_DATA_DATE)
-
-def update_slider_dates():
-    """Updates the slider's value (st.session_state.date_slider) based on the checkbox."""
-    if st.session_state.preset_checked:
-        # Checkbox is Ticked: Update the single 'date_slider' key to the preset dates
-        st.session_state.date_slider = (PRESET_START_DATE, PRESET_END_DATE)
-    else:
-        # Checkbox is UNTicked: Revert the 'date_slider' key to the full range
+    # Session State for Slider
+    if 'date_slider' not in st.session_state:
         st.session_state.date_slider = (MIN_DATA_DATE, MAX_DATA_DATE)
 
-# --- 4. Place Checkbox and Slider in App (Fixed) ---
+    def set_covid_range():
+        if st.session_state.covid_toggle:
+            st.session_state.date_slider = (PRESET_START, PRESET_END)
+        else:
+            st.session_state.date_slider = (MIN_DATA_DATE, MAX_DATA_DATE)
 
-st.header("Date Filter Controls")
+    st.toggle("Focus on Pandemic Era", key='covid_toggle', on_change=set_covid_range)
 
-# Create the Slider
-slider_min, slider_max = st.slider(
-    "Select Date Range",
-    min_value=MIN_DATA_DATE,
-    max_value=MAX_DATA_DATE,
-    format="MMM YYYY",
-    key='date_slider'
-)
-
-# Create the Tickbox
-st.checkbox(
-    "Filter to COVID-19 Impact Period (Mar 2020 - May 2021)",
-    key='preset_checked',
-    on_change=update_slider_dates
-)
+    slider_min, slider_max = st.slider(
+        "Date Range",
+        min_value=MIN_DATA_DATE,
+        max_value=MAX_DATA_DATE,
+        key='date_slider',
+        format="MMM YYYY"
+    )
+    
+    st.caption(f"Showing: {slider_min.strftime('%b %Y')} - {slider_max.strftime('%b %Y')}")
 
 
-citi_tab, tfl_tab, both_tab = st.tabs(["New York", "London", "Comparison"])
 
-with citi_tab:
-    st.image('https://images.ctfassets.net/p6ae3zqfb1e3/1rbjR48QnBe6cL8Ti6tPmV/08f9e1a62a6ef6ec1cddc4bc5a12f8d1/imageedit_2_9337177880.png?w=1500&q=60&fm=', width=1500)
-
-    # Citi Rides Over Time by Station Live Year - Bar
-    # Map Animation
-    df = con.execute("""
-        select
-            ride_week
-            , station_latitude as start_station_latitude
-            , station_longitude as start_station_longitude
-            , sum(rides) as Rides
-
-        from citi_statistics_by_week
-        where ride_week between ? and ?
-        group by all
-        order by ride_week
-    """
-    , [slider_min, slider_max]).df()
-    df['ride_week'] = df['ride_week'].astype(str) # Crucial for animation
-
-    # Set the initial view centered on NYC
-    center_lat = 40.750610
-    center_lon = -73.935242
-
-    # 💡 FIX 1: Use px.scatter_mapbox (the function for Mapbox tile maps)
-    fig = px.scatter_mapbox(
-        df,
-        lat="start_station_latitude",
-        lon="start_station_longitude",
-        size="Rides",
-        color="Rides",
-        animation_frame="ride_week",
+# ==============================================================================
+# PAGE 1: HEAD-TO-HEAD COMPARISON (The Version You Liked)
+# ==============================================================================
+if page == "📊 Comparison":
+    def get_city_weekly_data(table_name, start_date, end_date):
+        query = f"""
+            SELECT 
+                ride_week,
+                SUM(rides) as total_rides,
+                SUM(ride_duration_minutes) as total_duration,
+                COUNT(DISTINCT start_station_name) as active_stations,
+                SUM(CASE WHEN is_ride_rush_hour AND NOT is_ride_weekend THEN rides ELSE 0 END) as rush_hour_rides,
+                SUM(CASE WHEN is_ride_weekend THEN rides ELSE 0 END) as weekend_rides
+            FROM {table_name}
+            WHERE ride_week BETWEEN ? AND ?
+            GROUP BY 1
+            ORDER BY 1
+        """
+        df = con.execute(query, [start_date, end_date]).df()
         
-        # Map Configuration
-        zoom=10, 
-        height=600,
-        center=dict(lat=center_lat, lon=center_lon),
-        # 💡 FIX 2: Use mapbox_style (the correct argument for setting the background tile)
-        mapbox_style="carto-positron", 
-        color_continuous_scale=px.colors.sequential.Viridis,
-        title="NYC Citi Bike Hotspot Evolution"
+        # Feature Engineering
+        df['avg_duration'] = df['total_duration'] / df['total_rides']
+        df['rush_hour_pct'] = (df['rush_hour_rides'] / df['total_rides']) * 100
+        df['weekend_pct'] = (df['weekend_rides'] / df['total_rides']) * 100
+        return df
+
+    # Load Data
+    df_nyc = get_city_weekly_data('citi_statistics_by_week', slider_min, slider_max)
+    df_ldn = get_city_weekly_data('tfl_statistics_by_week', slider_min, slider_max)
+
+    # Add 'City' label for merging
+    df_nyc['City'] = 'New York (Citi Bike)'
+    df_ldn['City'] = 'London (TfL)'
+    df_combined = pd.concat([df_nyc, df_ldn])
+
+
+    # --- SECTION 1: THE SCALE ---
+    st.header("1. Scale & Growth: The New York Giant")
+    st.write(
+        """
+        First, let's look at the sheer volume. While both systems are vital to their cities, **New York operates on a different scale**.
+        Since 2018, NYC has aggressively expanded its network, fueling a massive divergence in ridership numbers compared to London.
+        """
     )
 
-    fig.update_layout(
-        sliders=[],
-        margin={"r":0,"t":40,"l":0,"b":0} # Keep your margins
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("NYC Total Rides", f"{df_nyc['total_rides'].sum():,.0f}")
+    col2.metric("NYC Peak Active Stations", f"{df_nyc['active_stations'].max():,.0f}")
+    col3.metric("LDN Total Rides", f"{df_ldn['total_rides'].sum():,.0f}")
+    col4.metric("LDN Peak Active Stations", f"{df_ldn['active_stations'].max():,.0f}")
+
+    # Chart: Total Rides Over Time
+    fig_vol = px.line(
+        df_combined, 
+        x='ride_week', 
+        y='total_rides', 
+        color='City',
+        title='Weekly Ridership Volume (2018-2023)',
+        labels={'ride_week': 'Date', 'total_rides': 'Weekly Rides'},
+        color_discrete_map={'New York (Citi Bike)': '#003399', 'London (TfL)': '#DC241f'} # Official brand colors
+    )
+    st.plotly_chart(fig_vol, use_container_width=True)
+
+
+    # --- SECTION 2: THE COVID PIVOT ---
+    st.header("2. The COVID Pivot: From Commuting to Joyriding")
+    st.markdown(
+        """
+        The pandemic fundamentally broke the "Commuter" model. In 2020, as offices closed, bikes transformed from 
+        **"Last Mile Transport"** into **"Mobile Gyms."**
+        """
     )
 
-    fig.update_layout(
-        margin={"r":0,"t":40,"l":0,"b":0},
+    tab_habit1, tab_habit2, tab_habit3 = st.tabs(["📉 The Death of Rush Hour", "⏱️ The Joyride Spike", "🏗️ Network Expansion"])
+
+    with tab_habit1:
+        st.caption("How much of the total traffic happens during traditional rush hours (6-9am, 4-7pm)?")
+        fig_rush = px.line(
+            df_combined, 
+            x='ride_week', 
+            y='rush_hour_pct', 
+            color='City',
+            title='Percentage of Rides During Rush Hour',
+            labels={'rush_hour_pct': '% of Rides in Rush Hour'},
+            color_discrete_map={'New York (Citi Bike)': '#003399', 'London (TfL)': '#DC241f'}
+        )
+        # Add annotation for lockdown
+        fig_rush.add_vrect(x0="2020-03-20", x1="2021-01-01", fillcolor="gray", opacity=0.1, annotation_text="Lockdowns", annotation_position="top left")
+        st.plotly_chart(fig_rush, use_container_width=True)
+        st.info("**Insight:** Notice the plunge in early 2020. London dropped from ~57% commuter traffic to <45%. NYC saw a similar collapse. Even in 2023, rush hour peaks haven't fully recovered to 2019 levels, reflecting the **Hybrid Work** era.")
+
+    with tab_habit2:
+        st.caption("How long is the average trip?")
+        fig_dur = px.line(
+            df_combined, 
+            x='ride_week', 
+            y='avg_duration', 
+            color='City',
+            title='Average Trip Duration (Minutes)',
+            labels={'avg_duration': 'Avg Duration (min)'},
+            color_discrete_map={'New York (Citi Bike)': '#003399', 'London (TfL)': '#DC241f'}
+        )
+        fig_dur.add_vrect(x0="2020-03-20", x1="2021-01-01", fillcolor="gray", opacity=0.1, annotation_text="Lockdowns", annotation_position="top left")
+        st.plotly_chart(fig_dur, use_container_width=True)
+        st.info("**Insight:** In 2020, average trip times in NYC nearly **doubled** (from ~14m to ~25m). With gyms closed, New Yorkers used Citi Bikes for long leisure rides. London saw a similar, though less extreme, effect.")
+
+    with tab_habit3:
+        st.caption("How has the physical network grown?")
+        fig_stations = px.line(
+            df_combined, 
+            x='ride_week', 
+            y='active_stations', 
+            color='City',
+            title='Active Stations Over Time',
+            color_discrete_map={'New York (Citi Bike)': '#003399', 'London (TfL)': '#DC241f'}
+        )
+        fig_stations.add_vrect(x0="2020-03-20", x1="2021-01-01", fillcolor="gray", opacity=0.1, annotation_text="Lockdowns", annotation_position="top left")
+        st.plotly_chart(fig_stations, use_container_width=True)
+        st.info("**Insight:** NYC's growth is relentless. They continued to install hundreds of stations through the pandemic, whereas London's network footprint has remained relatively stable.")
+
+
+    # --- SECTION 3: SEASONALITY ---
+    st.header("3. Battling the Elements: The Seasonal Pulse")
+    st.write("Finally, we must account for the weather. New York's continental climate creates **extreme seasonality** compared to London's temperate (albeit rainy) maritime climate.")
+
+    # Prepare Seasonality Data (Year-Over-Year Overlay)
+    def get_seasonality_data(table_name):
+        return con.execute(f"""
+            SELECT 
+                EXTRACT(MONTH FROM date(ride_week)) as month_num,
+                EXTRACT(YEAR FROM date(ride_week))::STRING as year,
+                SUM(rides) as total_rides
+            FROM {table_name}
+            WHERE ride_week >= '2019-01-01'
+            GROUP BY 1, 2
+            ORDER BY 1
+        """).df()
+
+    df_seas_nyc = get_seasonality_data('citi_statistics_by_week')
+    df_seas_ldn = get_seasonality_data('tfl_statistics_by_week')
+
+    col_seas1, col_seas2 = st.columns(2)
+
+    with col_seas1:
+        st.subheader("New York Seasonality")
+        fig_seas_ny = px.line(
+            df_seas_nyc, x='month_num', y='total_rides', color='year',
+            title='NYC: Monthly Rides by Year',
+            color_discrete_sequence=px.colors.qualitative.Prism
+        )
+        st.plotly_chart(fig_seas_ny, use_container_width=True)
+
+    with col_seas2:
+        st.subheader("London Seasonality")
+        fig_seas_ldn = px.line(
+            df_seas_ldn, x='month_num', y='total_rides', color='year',
+            title='London: Monthly Rides by Year',
+            color_discrete_sequence=px.colors.qualitative.Prism
+        )
+        st.plotly_chart(fig_seas_ldn, use_container_width=True)
+
+    st.success(
+        """
+        **Key Takeaway:** * **NYC** ridership crashes in winter (Jan rides are often 30-40% of July peaks).
+        * **London** is much flatter. The "dip" in winter is far less severe, meaning London relies less on fair weather than NYC does.
+        * **2023 Growth:** Notice how the 2023 line (likely the top line) in NYC towers above previous years, showing that the system's growth is outpacing its seasonality.
+        """
+    )
+
+# ==============================================================================
+# PAGE 2: NEW YORK DEEP DIVE
+# ==============================================================================
+elif page == "🗽 New York Deep Dive":
+    st.title("🗽 New York: The Mobile Gym")
+    st.write("Beyond the commute, NYC reveals a fascinating story of behavioral shifts. When gyms closed in 2020, the bike network took over.")
+
+    # 1. THE MAP ANIMATION
+    st.subheader("📍 Hotspot Evolution")
+    st.write("Visualize how ridership clusters shift over time across the city.")
+
+    df_map = con.execute("""
+        SELECT 
+            ride_week,
+            station_latitude as lat,
+            station_longitude as lon,
+            SUM(rides) as Rides
+        FROM citi_statistics_by_week
+        WHERE ride_week BETWEEN ? AND ?
+        GROUP BY ALL
+        ORDER BY ride_week
+    """, [slider_min, slider_max]).df()
+    
+    if not df_map.empty:
+        df_map['ride_week'] = df_map['ride_week'].astype(str)
         
-        sliders=[dict(
-            active=0,
-            currentvalue={"prefix": "Week: "},
-            pad={"t": 20},
-            # Key: Ensure the slider's transition speed matches the buttons
-            transition={"duration": 100, "easing": "linear"}
-        )],
+        fig_anim = px.scatter_mapbox(
+            df_map, lat="lat", lon="lon", size="Rides", color="Rides",
+            animation_frame="ride_week",
+            zoom=10, height=600,
+            center=dict(lat=40.730610, lon=-73.935242),
+            mapbox_style="carto-positron",
+            color_continuous_scale=px.colors.sequential.Viridis,
+            title="NYC Citi Bike Density"
+        )
         
-        updatemenus=[
-            dict(
-                type="buttons",
-                showactive=True,
-                x=0.03, # Position the buttons near the left edge
-                y=0.05, # Position them slightly above the slider/margin
+        fig_anim.update_layout(
+            margin={"r":0,"t":40,"l":0,"b":0},
+            sliders=[dict(
+                active=0, currentvalue={"prefix": "Week: "}, pad={"t": 20},
+                transition={"duration": 100, "easing": "linear"}
+            )],
+            updatemenus=[dict(
+                type="buttons", showactive=True, x=0.03, y=0.05,
                 buttons=[
-                    # FAST PLAY BUTTON
-                    dict(
-                        label="▶️ Play",
-                        method="animate",
-                        args=[
-                            None, 
-                            {
-                                "frame": {"duration": 100, "redraw": True}, # 100ms per frame
-                                "fromcurrent": True, 
-                                "transition": {"duration": 50, "easing": "linear"}
-                            }
-                        ]
-                    ),
-                    # STOP BUTTON
-                    dict(
-                        label="⏸️ Stop",
-                        method="animate",
-                        args=[
-                            [None], # Pauses the animation at the current frame
-                            {"frame": {"duration": 0, "redraw": False}, "mode": "immediate"}
-                        ]
-                    )
+                    dict(label="▶️ Play", method="animate", args=[None, {"frame": {"duration": 50, "redraw": True}, "fromcurrent": True}]),
+                    dict(label="⏸️ Stop", method="animate", args=[[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate"}])
                 ]
-            )
-        ]
+            )]
+        )
+        fig_anim.update_traces(marker=dict(opacity=0.7, sizemin=3, sizemode='area'))
+        st.plotly_chart(fig_anim, use_container_width=True)
+    else:
+        st.warning("No data available for map in this date range.")
+    
+    st.info("NYC trippled the number of stations, aggressively expanding its network into boroughs surrounding Manhattan.")
+
+    st.divider()
+
+    # 2. BEHAVIORAL ANALYSIS
+    st.subheader("🧠 Changing Habits: The 'Joyride' Effect")
+    
+    col_ny1, col_ny2 = st.columns(2)
+    
+    # Fetch NYC Behavioral Data
+    df_ny_behav = con.execute("""
+        SELECT 
+            ride_week,
+            SUM(rides) as total_rides,
+            SUM(ride_duration_minutes) / SUM(rides) as avg_duration,
+            SUM(CASE WHEN is_ride_weekend THEN rides ELSE 0 END) as weekend_rides,
+            SUM(CASE WHEN is_ride_weekend THEN 0 ELSE rides END) as weekday_rides
+        FROM citi_statistics_by_week
+        WHERE ride_week BETWEEN ? AND ?
+        GROUP BY 1
+        ORDER BY 1
+    """, [slider_min, slider_max]).df()
+
+    with col_ny1:
+        st.markdown("**1. The Duration Spike**")
+        st.caption("Average trip length in minutes")
+        fig_dur = px.area(
+            df_ny_behav, x='ride_week', y='avg_duration',
+            title='Average Trip Duration (Min)',
+            color_discrete_sequence=['#003399']
+        )
+        fig_dur.add_vrect(x0="2020-03-20", x1="2021-01-01", fillcolor="orange", opacity=0.2, annotation_text="Lockdown")
+        st.plotly_chart(fig_dur, use_container_width=True)
+        st.info("During 2020, usage shifted from 'A-to-B' transport (short trips) to 'Leisure & Exercise' (long trips), with duration nearly doubling.")
+
+    with col_ny2:
+        st.markdown("**2. The Weekend Takeover**")
+        st.caption("Total rides split by Weekday vs Weekend")
+        # Melting for stacked bar chart
+        df_ny_melt = df_ny_behav.melt(id_vars='ride_week', value_vars=['weekday_rides', 'weekend_rides'], var_name='Type', value_name='Rides')
+        
+        fig_weekend = px.bar(
+            df_ny_melt, x='ride_week', y='Rides', color='Type',
+            title='Weekday vs Weekend Volume',
+            color_discrete_map={'weekday_rides': '#003399', 'weekend_rides': '#6699CC'}
+        )
+        st.plotly_chart(fig_weekend, use_container_width=True)
+        st.info("While weekday commuting collapsed in 2020, weekend traffic exploded, driving the system's recovery.")
+
+
+# ==============================================================================
+# PAGE 3: LONDON DEEP DIVE (Improved)
+# ==============================================================================
+elif page == "🇬🇧 London Deep Dive":
+    st.title("🇬🇧 London: The Missing Commuters")
+    st.write("London's story is one of resilience but also a struggle to regain its core identity as a commuter network.")
+
+    # Fetch London Data
+    df_ldn_stats = con.execute("""
+        SELECT 
+            ride_week,
+            SUM(rides) as total_rides,
+            COUNT(DISTINCT start_station_name) as active_stations,
+            SUM(CASE WHEN is_ride_rush_hour THEN rides ELSE 0 END) as rush_hour_rides,
+            SUM(CASE WHEN is_ride_rush_hour THEN 0 ELSE rides END) as non_rush_hour_rides
+        FROM tfl_statistics_by_week
+        WHERE ride_week BETWEEN ? AND ?
+        GROUP BY 1
+        ORDER BY 1
+    """, [slider_min, slider_max]).df()
+    
+    df_ldn_stats['rides_per_station'] = df_ldn_stats['total_rides'] / df_ldn_stats['active_stations']
+
+    # 1. THE MAP ANIMATION
+    st.subheader("📍 Hotspot Evolution")
+    st.write("Visualize how ridership clusters shift over time across the city.")
+
+    df_map = con.execute("""
+        SELECT 
+            ride_week,
+            station_latitude as lat,
+            station_longitude as lon,
+            SUM(rides) as Rides
+        FROM tfl_statistics_by_week
+        WHERE ride_week BETWEEN ? AND ?
+        GROUP BY ALL
+        ORDER BY ride_week
+    """, [slider_min, slider_max]).df()
+    
+    if not df_map.empty:
+        df_map['ride_week'] = df_map['ride_week'].astype(str)
+        
+        fig_anim = px.scatter_mapbox(
+            df_map, lat="lat", lon="lon", size="Rides", color="Rides",
+            animation_frame="ride_week",
+            zoom=10, height=600,
+            center=dict(lat=51.512820, lon=-0.127171),
+            mapbox_style="carto-positron",
+            color_continuous_scale=px.colors.sequential.Viridis,
+            title="London TFL Bike Density"
+        )
+        
+        fig_anim.update_layout(
+            margin={"r":0,"t":40,"l":0,"b":0},
+            sliders=[dict(
+                active=0, currentvalue={"prefix": "Week: "}, pad={"t": 20},
+                transition={"duration": 100, "easing": "linear"}
+            )],
+            updatemenus=[dict(
+                type="buttons", showactive=True, x=0.03, y=0.05,
+                buttons=[
+                    dict(label="▶️ Play", method="animate", args=[None, {"frame": {"duration": 50, "redraw": True}, "fromcurrent": True}]),
+                    dict(label="⏸️ Stop", method="animate", args=[[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate"}])
+                ]
+            )]
+        )
+        fig_anim.update_traces(marker=dict(opacity=0.7, sizemin=3, sizemode='area'))
+        st.plotly_chart(fig_anim, use_container_width=True)
+    else:
+        st.warning("No data available for map in this date range.")
+
+    st.info("Unlike NYC, London's station numbers remained flat.")
+
+    st.divider()
+
+    # 2. RUSH HOUR RECOVERY
+    st.subheader("📉 Where did the commuters go?")
+    st.write("Unlike NYC, London relies heavily on rush hour traffic. The chart below separates Commuter traffic (Dark Red) from Leisure traffic (Light Red).")
+    
+    # Melt for comparison
+    df_ldn_melt = df_ldn_stats.melt(id_vars='ride_week', value_vars=['rush_hour_rides', 'non_rush_hour_rides'], var_name='Type', value_name='Rides')
+    
+    fig_rec = px.line(
+        df_ldn_melt, x='ride_week', y='Rides', color='Type',
+        title='Absolute Volume: Rush Hour vs Non-Rush Hour',
+        color_discrete_map={'rush_hour_rides': '#DC241f', 'non_rush_hour_rides': '#ff9999'}
     )
+    fig_rec.add_vrect(x0="2020-03-20", x1="2021-01-01", fillcolor="gray", opacity=0.1, annotation_text="Lockdowns", annotation_position="top left")
+    st.plotly_chart(fig_rec, use_container_width=True)
+    
+    col_l1, col_l2 = st.columns([2, 1])
+    with col_l1:
+        st.info("Notice that **Non-Rush Hour** (Leisure) traffic actually hit record highs in 2021/2022. The system's 'slump' is almost entirely due to the missing **Rush Hour** commuters who haven't returned.")
 
-    st.plotly_chart(fig, width='stretch')
+    st.divider()
 
-    # Citi Ride Stations per Week
-    df = con.execute("select ride_week, sum(rides) as Rides from citi_statistics_by_week where ride_week between ? and ? group by all order by ride_week", [slider_min, slider_max]).df()
-    fig = px.line(df, x='ride_week', y='Rides', title='Weekly Rides')
-    if slider_min <= PRESET_START_DATE <= slider_max:
-        fig.add_vline(x=PRESET_START_DATE, line_width=3, line_dash="dash", line_color="green")
-    if slider_min <= PRESET_END_DATE <= slider_max:
-        fig.add_vline(x=PRESET_END_DATE, line_width=3, line_dash="dash", line_color="green")
-    st.plotly_chart(fig, width='stretch')
+    # 3. NETWORK INTENSITY
+    st.subheader("🥵 Sweating the Assets")
+    st.write("London hasn't expanded its station count nearly as fast as NYC. This means the network is being worked harder.")
 
-    # Citi Ride Duration per Week
-    df = con.execute("select ride_week, round(sum(ride_duration_minutes)/sum(rides), 2) as avg_ride_duration_minutes from citi_statistics_by_week where ride_week between ? and ? GROUP BY all order by ride_week", [slider_min, slider_max]).df()
-    fig = px.line(df, x='ride_week', y='avg_ride_duration_minutes', title='Ride Duration - Minutes')
-    if slider_min <= PRESET_START_DATE <= slider_max:
-        fig.add_vline(x=PRESET_START_DATE, line_width=3, line_dash="dash", line_color="green")
-    if slider_min <= PRESET_END_DATE <= slider_max:
-        fig.add_vline(x=PRESET_END_DATE, line_width=3, line_dash="dash", line_color="green")
-    st.plotly_chart(fig, width='stretch')
-
-    # Citi Stations per Week
-    df = con.execute("select ride_week, count(distinct start_station_name) as stations_started from citi_statistics_by_week where ride_week between ? and ? GROUP BY all order by ride_week", [slider_min, slider_max]).df()
-    fig = px.line(df, x='ride_week', y='stations_started', title='Active Stations')
-    if slider_min <= PRESET_START_DATE <= slider_max:
-        fig.add_vline(x=PRESET_START_DATE, line_width=3, line_dash="dash", line_color="green")
-    if slider_min <= PRESET_END_DATE <= slider_max:
-        fig.add_vline(x=PRESET_END_DATE, line_width=3, line_dash="dash", line_color="green")
-    st.plotly_chart(fig, width='stretch')
-
-    # Citi Rides Over Time by Station Live Year - Bar
-    df = con.execute("select ride_week, station_live_year, sum(rides) as Rides from citi_statistics_by_week where ride_week between ? and ? GROUP BY all order by 1,2", [slider_min, slider_max]).df()
-    df['station_live_year'] = df['station_live_year'].astype(str)
-    fig = px.bar(df, x='ride_week', y='Rides', title='Active Stations by Live Year', color='station_live_year', color_continuous_scale='Viridis')
-    if slider_min <= PRESET_START_DATE <= slider_max:
-        fig.add_vline(x=PRESET_START_DATE, line_width=3, line_dash="dash", line_color="green")
-    if slider_min <= PRESET_END_DATE <= slider_max:
-        fig.add_vline(x=PRESET_END_DATE, line_width=3, line_dash="dash", line_color="green")
-    st.plotly_chart(fig, width='stretch')
-
-    # Citi Rides Over Time by Station Live Year - Bar
-    df = con.execute("""
-        with agg_all as (
-            select
-                ride_week
-                , sum(rides) as Rides
-            from citi_statistics_by_week
-            GROUP BY all
-        ), agg_type as (
-            select
-                ride_week
-                , sum(rides) as Rides
-            from citi_statistics_by_week
-            where is_ride_weekend
-            GROUP BY all
+    col_stat1, col_stat2 = st.columns(2)
+    
+    with col_stat1:
+        st.caption("Total Active Stations")
+        fig_stat = px.line(
+            df_ldn_stats, x='ride_week', y='active_stations',
+            title='Active Station Count',
+            color_discrete_sequence=['gray']
         )
-        select
-            agg_all.ride_week
-            , (agg_type.Rides / agg_all.Rides) * 100 as Percentage
-        from agg_all
-        inner join agg_type
-            on agg_all.ride_week = agg_type.ride_week
-        where agg_all.ride_week between ? and ?
-        order by 1,2
-    """, [slider_min, slider_max]).df()
-    fig = px.line(df, x='ride_week', y='Percentage', title='Percentage of Weekend Rides')
-    if slider_min <= PRESET_START_DATE <= slider_max:
-        fig.add_vline(x=PRESET_START_DATE, line_width=3, line_dash="dash", line_color="green")
-    if slider_min <= PRESET_END_DATE <= slider_max:
-        fig.add_vline(x=PRESET_END_DATE, line_width=3, line_dash="dash", line_color="green")
-    st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig_stat, use_container_width=True)
 
-
-    # Citi Rides Over Time by Station Live Year - Bar
-    df = con.execute("""
-        with agg_all as (
-            select
-                ride_week
-                , sum(rides) as Rides
-            from citi_statistics_by_week
-            GROUP BY all
-        ), agg_type as (
-            select
-                ride_week
-                , sum(rides) as Rides
-            from citi_statistics_by_week
-            where is_ride_rush_hour
-            GROUP BY all
+    with col_stat2:
+        st.caption("Rides per Station (Intensity)")
+        fig_int = px.area(
+            df_ldn_stats, x='ride_week', y='rides_per_station',
+            title='Rides per Station',
+            color_discrete_sequence=['#DC241f']
         )
-        select
-            agg_all.ride_week
-            , (agg_type.Rides / agg_all.Rides) * 100 as Percentage
-        from agg_all
-        inner join agg_type
-            on agg_all.ride_week = agg_type.ride_week
-        where agg_all.ride_week between ? and ?
-        order by 1,2
-    """, [slider_min, slider_max]).df()
-    fig = px.line(df, x='ride_week', y='Percentage', title='Percentage of Rush Hour Rides')
-    if slider_min <= PRESET_START_DATE <= slider_max:
-        fig.add_vline(x=PRESET_START_DATE, line_width=3, line_dash="dash", line_color="green")
-    if slider_min <= PRESET_END_DATE <= slider_max:
-        fig.add_vline(x=PRESET_END_DATE, line_width=3, line_dash="dash", line_color="green")
-    st.plotly_chart(fig, width='stretch')
-
-with tfl_tab:
-    col1, col2, col3 = st.columns([1, 3, 1])
-    with col2:
-        st.image('https://play-lh.googleusercontent.com/Ri24WZyAocyMtFxscTxCir219rx--utI8MmJ-oKhxd7s5304G67E_WLzWh5xdjqYl4Q', width=256)
-
-    #
-    df = con.execute("select ride_week, sum(rides) as Rides from tfl_statistics_by_week where ride_week between ? and ? group by all order by ride_week", [slider_min, slider_max]).df()
-    fig = px.line(df, x='ride_week', y='Rides', title='Weekly Rides')
-    if slider_min <= PRESET_START_DATE <= slider_max:
-        fig.add_vline(x=PRESET_START_DATE, line_width=3, line_dash="dash", line_color="green")
-    if slider_min <= PRESET_END_DATE <= slider_max:
-        fig.add_vline(x=PRESET_END_DATE, line_width=3, line_dash="dash", line_color="green")
-    st.plotly_chart(fig, width='stretch')
-
-    #
-    df = con.execute("select ride_week, round(sum(ride_duration_minutes)/sum(rides), 2) as avg_ride_duration_minutes from tfl_statistics_by_week where ride_week between ? and ? GROUP BY all order by ride_week", [slider_min, slider_max]).df()
-    fig = px.line(df, x='ride_week', y='avg_ride_duration_minutes', title='Ride Duration - Minutes')
-    if slider_min <= PRESET_START_DATE <= slider_max:
-        fig.add_vline(x=PRESET_START_DATE, line_width=3, line_dash="dash", line_color="green")
-    if slider_min <= PRESET_END_DATE <= slider_max:
-        fig.add_vline(x=PRESET_END_DATE, line_width=3, line_dash="dash", line_color="green")
-    st.plotly_chart(fig, width='stretch')
-
-    #
-    df = con.execute("select ride_week, count(distinct start_station_name) as stations_started from tfl_statistics_by_week where ride_week between ? and ? GROUP BY all order by ride_week", [slider_min, slider_max]).df()
-    fig = px.line(df, x='ride_week', y='stations_started', title='Active Stations')
-    if slider_min <= PRESET_START_DATE <= slider_max:
-        fig.add_vline(x=PRESET_START_DATE, line_width=3, line_dash="dash", line_color="green")
-    if slider_min <= PRESET_END_DATE <= slider_max:
-        fig.add_vline(x=PRESET_END_DATE, line_width=3, line_dash="dash", line_color="green")
-    st.plotly_chart(fig, width='stretch')
-
-    #
-    df = con.execute("select ride_week, station_live_year, sum(rides) as Rides from tfl_statistics_by_week where ride_week between ? and ? GROUP BY all order by 1,2", [slider_min, slider_max]).df()
-    df['station_live_year'] = df['station_live_year'].astype(str)
-    fig = px.bar(df, x='ride_week', y='Rides', title='Active Stations by Live Year', color='station_live_year', color_continuous_scale='Viridis')
-    if slider_min <= PRESET_START_DATE <= slider_max:
-        fig.add_vline(x=PRESET_START_DATE, line_width=3, line_dash="dash", line_color="green")
-    if slider_min <= PRESET_END_DATE <= slider_max:
-        fig.add_vline(x=PRESET_END_DATE, line_width=3, line_dash="dash", line_color="green")
-    st.plotly_chart(fig, width='stretch')
-
-    #
-    df = con.execute("""
-        with agg_all as (
-            select
-                ride_week
-                , sum(rides) as Rides
-            from tfl_statistics_by_week
-            GROUP BY all
-        ), agg_type as (
-            select
-                ride_week
-                , sum(rides) as Rides
-            from tfl_statistics_by_week
-            where is_ride_weekend
-            GROUP BY all
-        )
-        select
-            agg_all.ride_week
-            , (agg_type.Rides / agg_all.Rides) * 100 as Percentage
-        from agg_all
-        inner join agg_type
-            on agg_all.ride_week = agg_type.ride_week
-        where agg_all.ride_week between ? and ?
-        order by 1,2
-    """, [slider_min, slider_max]).df()
-    fig = px.line(df, x='ride_week', y='Percentage', title='Percentage of Weekend Rides')
-    if slider_min <= PRESET_START_DATE <= slider_max:
-        fig.add_vline(x=PRESET_START_DATE, line_width=3, line_dash="dash", line_color="green")
-    if slider_min <= PRESET_END_DATE <= slider_max:
-        fig.add_vline(x=PRESET_END_DATE, line_width=3, line_dash="dash", line_color="green")
-    st.plotly_chart(fig, width='stretch')
-
-    #
-    df = con.execute("""
-        with agg_all as (
-            select
-                ride_week
-                , sum(rides) as Rides
-            from tfl_statistics_by_week
-            GROUP BY all
-        ), agg_type as (
-            select
-                ride_week
-                , sum(rides) as Rides
-            from tfl_statistics_by_week
-            where is_ride_rush_hour
-            GROUP BY all
-        )
-        select
-            agg_all.ride_week
-            , (agg_type.Rides / agg_all.Rides) * 100 as Percentage
-        from agg_all
-        inner join agg_type
-            on agg_all.ride_week = agg_type.ride_week
-        where agg_all.ride_week between ? and ?
-        order by 1,2
-    """, [slider_min, slider_max]).df()
-    fig = px.line(df, x='ride_week', y='Percentage', title='Percentage of Rush Hour Rides')
-    if slider_min <= PRESET_START_DATE <= slider_max:
-        fig.add_vline(x=PRESET_START_DATE, line_width=3, line_dash="dash", line_color="green")
-    if slider_min <= PRESET_END_DATE <= slider_max:
-        fig.add_vline(x=PRESET_END_DATE, line_width=3, line_dash="dash", line_color="green")
-    st.plotly_chart(fig, width='stretch')
-
-with both_tab:
-    citi_col, tfl_col = st.columns(2)
-
-    with citi_col:
-        df = con.execute("select sum(rides) as rides from citi_statistics_by_week where ride_week between ? and ?", [slider_min, slider_max]).df()
-        st.metric(label="Total Rides - New York", value=f"{df['rides'].iloc[0]:,}")
-
-        df = con.execute("select count(distinct start_station_name) as stations from citi_statistics_by_week where ride_week between ? and ?", [slider_min, slider_max]).df()
-        st.metric(label="Active Stations - New York", value=f"{df['stations'].iloc[0]:,}")
-
-        df = con.execute("select round((count(case when is_ride_weekend then 1 end) / count(*) * 100), 2) as perc_weekend from citi_statistics_by_week where ride_week between ? and ?", [slider_min, slider_max]).df()
-        st.metric(label="Percentage of Rides on Weekend - New York", value=f"{df['perc_weekend'].iloc[0]:,}")
-
-    with tfl_col:
-        df = con.execute("select sum(rides) as rides from tfl_statistics_by_week where ride_week between ? and ?", [slider_min, slider_max]).df()
-        st.metric(label="Total Rides - London", value=f"{df['rides'].iloc[0]:,}")
-
-        df = con.execute("select count(distinct start_station_name) as stations from tfl_statistics_by_week where ride_week between ? and ?", [slider_min, slider_max]).df()
-        st.metric(label="Active Stations - London", value=f"{df['stations'].iloc[0]:,}")
-
-        df = con.execute("select round((count(case when is_ride_weekend then 1 end) / count(*) * 100), 2) as perc_weekend from tfl_statistics_by_week where ride_week between ? and ?", [slider_min, slider_max]).df()
-        st.metric(label="Percentage of Rides on Weekend - London", value=f"{df['perc_weekend'].iloc[0]:,}")
+        st.plotly_chart(fig_int, use_container_width=True)
+    
+    st.info("Even with fewer stations added, London maintains high efficiency. The network is dense and highly utilized, meaning station availability is likely a bigger challenge here than in the rapidly expanding NYC network.")

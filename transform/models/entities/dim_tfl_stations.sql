@@ -3,11 +3,12 @@
 
 with stg_tfl_cycling_data as (
     select * from {{ ref('stg_tfl_cycling_data') }}
+), tfl_station_geocode as (
+    select * from {{ ref('tfl_station_geocode') }}
 ), unioned as (
     
     select
 
-        -- start_station_id as station_id
         start_station_name as station_name
         , started_at
 
@@ -19,7 +20,6 @@ with stg_tfl_cycling_data as (
 
     select
 
-        -- end_station_id as station_id
         end_station_name as station_name
         , started_at
 
@@ -40,4 +40,12 @@ with stg_tfl_cycling_data as (
 
 )
 
-select * from final
+select
+
+    final.*
+    , tfl_station_geocode.station_latitude
+    , tfl_station_geocode.station_longitude
+
+from final
+left join tfl_station_geocode
+    on final.station_name = tfl_station_geocode.station_name
